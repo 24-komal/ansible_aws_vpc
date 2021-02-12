@@ -1,0 +1,192 @@
+- hosts: localhost
+  vars_files: aws_keys.yml
+  vars:
+          access: "{{ aws_access }}"
+          secret: "{{ aws_secret }}"
+          vpc_name: "myvpc"
+          vpc_cidr_block: "192.168.0.0/16"
+          aws_region: "us-east-1"
+          public_subnet_name: "mysubnet1"
+          private_subnet_name: "mysubnet2"
+          public_subnet_cidr: "192.168.1.0/24"
+          private_subnet_cidr: "192.168.2.0/24"
+          key: "myansiblekey"
+          instance_type: "t2.micro"
+          ami: "ami-047a51fa27710816e"
+  tasks:
+  - name: "create a VPC with dedicated tenancy and a couple of tags"
+    ec2_vpc_net:
+        state: present
+        name: "{{ vpc_name }}"
+        cidr_block: "{{ vpc_cidr_block }}"
+        region: "{{ aws_region }}"
+        tags:
+           name: my_vpc
+        aws_access_key: "{{ access }}"
+        aws_secret_key: "{{ secret }}"
+    register: vpc
+
+  - debug:
+          var: vpc
+
+  - name: "Setting VPC id as a variable"
+    set_fact:
+            vpc_id: "{{ vpc.vpc.id }}"
+
+  - name: "Creating a  public subnet"
+    ec2_vpc_subnet:
+        state: present
+        vpc_id: "{{ vpc_id }}"
+        cidr: "{{ public_subnet_cidr }}"
+        tags:
+           Name: "my_public_subnet"
+        az: "{{ aws_region }}a"
+        map_public: yes
+        region: "{{ aws_region }}"
+        aws_access_key: "{{ access }}"
+        aws_secret_key: "{{ secret }}"
+    register: public_subnet
+
+  - debug:
+          var: public_subnet
+    
+  - name: "Setting the public subnet id as variable"      
+    set_fact:
+               public_subnet_id: "{{ public_subnet.subnet.id }}"
+  
+  - name: "Creating a  private subnet"
+    ec2_vpc_subnet:
+        state: present
+        vpc_id: "{{ vpc_id }}"
+        cidr: "{{ private_subnet_cidr }}"
+        tags:
+           Name: "my_private_subnet"
+        az: "{{ aws_region }}b"
+        region: "{{ aws_region }}"
+        aws_access_key: "{{ access }}"
+        aws_secret_key: "{{ secret }}"
+    register: private_subnet
+
+  - debug:
+          var: private_subnet
+    
+  - name: "Setting the private subnet id as variable"      
+    set_fact:
+               private_subnet_id: "{{ private_subnet.subnet.id }}"
+              
+   
+  - name: "Creating an Internet Gateway for VPC"
+    ec2_vpc_igw:
+               vpc_id: "{{ vpc_id }}"
+               state: present
+               region: "{{ aws_region }}"
+               aws_access_key: "{{ access }}"
+               aws_secret_key: "{{ secret }}"
+    register: my_vpc_igw
+
+  - debug:
+          var: my_vpc_igw
+
+  - name: "Setting Internet Gateway ID in variable"
+    set_fact:
+            igw_id: "{{ my_vpc_igw.gateway_id }}"
+
+  - name: "launching one ec2 instance in public subnet "
+    ec2:
+        key_name: "{{ key }}"
+        instance_type: "{{ instance_type}}"
+        image: "{{ ami }}"
+        wait: yes
+        exact_count: 1
+        instance_tags:
+               name: Webserver
+        count_tag:
+                name: Webserver
+        vpc_subnet_id: "{{ public_subnet_id }}"
+        region: "{{ aws_region }}"
+        aws_access_key: "{{ access }}"
+        aws_secret_key: "{{ secret }}"
+    register: public_instance
+
+  - debug:
+          var: public_instance
+
+  - name: "launching one ec2 instance in 2nd private subnet "
+    ec2:
+            key_name: "{{ key}}"
+            instance_type: "{{ instance_type}}"
+            image: "{{ ami }}"
+            wait: yes
+            exact_count:  1
+            instance_tags:
+                    name: Database
+            count_tag:
+                    name: Database
+            vpc_subnet_id: "{{ private_subnet_id }}"
+            region: "{{ aws_region }}"
+            aws_access_key: "{{ access }}"
+            aws_secret_key: "{{ secret }}"
+    register: private_instance
+
+  - debug:
+          var: private_instance
+
+
+  - name: "Creating a new public subnet route table"
+    ec2_vpc_route_table:
+            vpc_id: "{{ vpc_id }}"
+            region: "{{ aws_region }}"
+            state: present
+            tags:
+               Name: Public
+            subnets: "{{ public_subnet_id }}"
+            routes:
+              - dest: 0.0.0.0/0
+                gateway_id: "{{ igw_id }}"
+            region: "{{ aws_region }}"
+            aws_access_key: "{{ access }}"
+            aws_secret_key: "{{ secret }}"
+    register: public_route_table
+
+  - debug:
+          var: public_route_table
+          
+  - name: Create new nat gateway and allocate new EIP
+    ec2_vpc_nat_gateway:
+            state: present
+            subnet_id: "{{ public_subnet_id }}"
+            wait: true
+            region: "{{ aws_region }}"
+            if_exist_do_not_create: true
+            aws_access_key: "{{ access }}"
+            aws_secret_key: "{{ secret }}"
+    register: nat_gateway
+
+  - debug: 
+        var: nat_gateway
+
+  - pause:
+          seconds: 5
+        
+  - name: "Set up NAT-protected route table"
+    ec2_vpc_route_table:
+            vpc_id: "{{ vpc_id }}"
+            region: "{{ aws_region }}"
+            state: present
+            tags:
+                 Name: Internal
+            subnets: "{{ private_subnet_id }}"         
+            routes:
+                 - dest: 0.0.0.0/0
+                   gateway_id: "{{ nat_gateway.nat_gateway_id}}"
+            region: "{{ aws_region }}"
+            aws_access_key: "{{ access }}"
+            aws_secret_key: "{{ secret }}"
+    register: nat_route_table
+
+  - debug:
+          var: nat_route_table
+
+
+
+        
